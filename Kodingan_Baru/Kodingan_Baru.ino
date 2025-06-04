@@ -1,0 +1,152 @@
+#include <Arduino.h>
+#include <RTClib.h>
+#include <SoftwareSerial.h>
+#include <DFRobotDFPlayerMini.h>
+
+// Pin Definitions
+#define WHITE_LED_PIN 12  // PWM pin for white LED
+#define YELLOW_LED_PIN 14 // PWM pin for yellow LED
+#define MP3_RX_PIN 16    // RX pin for MP3 player
+#define MP3_TX_PIN 17    // TX pin for MP3 player
+
+// PWM Configuration
+#define PWM_CHANNEL_WHITE 0
+#define PWM_CHANNEL_YELLOW 1
+#define PWM_FREQUENCY 5000
+#define PWM_RESOLUTION 8
+
+// Global Objects
+RTC_DS3231 rtc;
+SoftwareSerial mp3Serial(MP3_RX_PIN, MP3_TX_PIN);
+DFRobotDFPlayerMini mp3;
+
+// Alarm Settings
+struct {
+    int sleepHour = 22;
+    int sleepMin = 0;
+    int wakeHour = 6;
+    int wakeMin = 0;
+    int whiteBrightness = 255;
+    int yellowBrightness = 128;
+} alarmSettings;
+
+// State variables
+bool sleepModeActive = false;
+bool wakeModeActive = false;
+unsigned long lastSerialCheck = 0;
+const unsigned long serialCheckInterval = 1000;
+
+void setupPWM() {
+    // ledcSetup(PWM_CHANNEL_WHITE, PWM_FREQUENCY, PWM_RESOLUTION);
+    // ledcSetup(PWM_CHANNEL_YELLOW, PWM_FREQUENCY, PWM_RESOLUTION);
+    ledcAttach(WHITE_LED_PIN, PWM_FREQUENCY, PWM_CHANNEL_WHITE);
+    ledcAttach(YELLOW_LED_PIN, PWM_FREQUENCY, PWM_CHANNEL_YELLOW);
+}
+
+void setupMP3Player() {
+    mp3Serial.begin(9600);
+    if (!mp3.begin(mp3Serial)) {
+        Serial.println("Error initializing MP3 player!");
+        while(true);
+    }
+    mp3.volume(20); // Set initial volume (0-30)
+}
+
+void activateSleepMode() {
+    if (!sleepModeActive) {
+        ledcWrite(PWM_CHANNEL_WHITE, 0);
+        ledcWrite(PWM_CHANNEL_YELLOW, alarmSettings.yellowBrightness);
+        mp3.play(1); // Play sleep music (file 0001.mp3)
+        sleepModeActive = true;
+        wakeModeActive = false;
+    }
+}
+
+void activateWakeMode() {
+    if (!wakeModeActive) {
+        ledcWrite(PWM_CHANNEL_YELLOW, 0);
+        ledcWrite(PWM_CHANNEL_WHITE, alarmSettings.whiteBrightness);
+        mp3.play(2); // Play wake music (file 0002.mp3)
+        wakeModeActive = true;
+        sleepModeActive = false;
+    }
+}
+
+void checkAlarms() {
+    DateTime now = rtc.now();
+    
+    if (now.hour() == alarmSettings.sleepHour && 
+        now.minute() == alarmSettings.sleepMin) {
+        activateSleepMode();
+    }
+    
+    if (now.hour() == alarmSettings.wakeHour && 
+        now.minute() == alarmSettings.wakeMin) {
+        activateWakeMode();
+    }
+}
+
+void processSerialCommand() {
+    if (Serial.available() > 0) {
+        String command = Serial.readStringUntil('\n');
+        
+        if (command.startsWith("SET")) {
+            // Format: SET SLEEP HH MM or SET WAKE HH MM
+            char type[6];
+            int hour, minute;
+            if (sscanf(command.c_str(), "SET %s %d %d", type, &hour, &minute) == 3) {
+                if (String(type) == "SLEEP") {
+                    alarmSettings.sleepHour = hour;
+                    alarmSettings.sleepMin = minute;
+                    Serial.printf("Sleep alarm set to %02d:%02d\n", hour, minute);
+                } else if (String(type) == "WAKE") {
+                    alarmSettings.wakeHour = hour;
+                    alarmSettings.wakeMin = minute;
+                    Serial.printf("Wake alarm set to %02d:%02d\n", hour, minute);
+                }
+            }
+        } else if (command.startsWith("BRIGHTNESS")) {
+            // Format: BRIGHTNESS WHITE/YELLOW VALUE
+            char type[8];
+            int value;
+            if (sscanf(command.c_str(), "BRIGHTNESS %s %d", type, &value) == 2) {
+                if (String(type) == "WHITE") {
+                    alarmSettings.whiteBrightness = value;
+                    Serial.printf("White LED brightness set to %d\n", value);
+                } else if (String(type) == "YELLOW") {
+                    alarmSettings.yellowBrightness = value;
+                    Serial.printf("Yellow LED brightness set to %d\n", value);
+                }
+            }
+        }
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    
+    if (!rtc.begin()) {
+        Serial.println("RTC module initialization failed!");
+        while (1);
+    }
+    
+    setupPWM();
+    setupMP3Player();
+    
+    Serial.println("System ready!");
+    Serial.println("Commands:");
+    Serial.println("SET SLEEP HH MM - Set sleep alarm time");
+    Serial.println("SET WAKE HH MM - Set wake alarm time");
+    Serial.println("BRIGHTNESS WHITE/YELLOW VALUE(0-255)");
+}
+
+void loop() {
+    unsigned long currentMillis = millis();
+    
+    // Check serial commands
+    if (currentMillis - lastSerialCheck >= serialCheckInterval) {
+        lastSerialCheck = currentMillis;
+        processSerialCommand();
+        checkAlarms();
+    }
+}
